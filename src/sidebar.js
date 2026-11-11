@@ -260,41 +260,76 @@
   // We walk the shallow chain of full-bleed "app shell" elements and knock
   // their background alpha down, so the desktop blur shows through the page
   // while text and controls stay fully opaque.
+  // Alphas are deliberately low: this tint is the *only* opaque layer left once
+  // the shells are cleared, so it stacks with nothing. At 0.8 the window went
+  // flat grey and lost the desktop entirely.
   var LEVELS = [
     { alpha: 1,    glyph: "○", name: "Solid" },
-    { alpha: 0.82, glyph: "◑", name: "Frosted" },
-    { alpha: 0.55, glyph: "●", name: "Clear" }
+    { alpha: 0.45, glyph: "◑", name: "Frosted" },
+    { alpha: 0.15, glyph: "●", name: "Clear" }
   ];
   var SKIP = { SCRIPT: 1, STYLE: 1, IMG: 1, VIDEO: 1, CANVAS: 1, SVG: 1, TEXTAREA: 1, INPUT: 1 };
   var level = 0;
   var touched = [];
   var glassBtn = null;
   var settleTimer = null;
+  var base = null;
+  var baseLocked = false;
+
+  // The page's own backdrop colour, captured before we touch anything. It
+  // becomes the single translucent layer the whole window is tinted with.
+  function captureBase() {
+    if (baseLocked) return;
+    var cands = [document.body, document.documentElement];
+    for (var i = 0; i < cands.length; i++) {
+      if (!cands[i]) continue;
+      var m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/.exec(
+        getComputedStyle(cands[i]).backgroundColor
+      );
+      if (m && (m[4] === undefined || parseFloat(m[4]) > 0.9)) {
+        base = m[1] + "," + m[2] + "," + m[3];
+        baseLocked = true;
+        return;
+      }
+    }
+    // Provisional only: sampling can happen before the site's CSS settles, so
+    // leave it unlocked and let a later repaint upgrade it.
+    base = base || "20,20,26";
+  }
 
   function restore() {
     for (var i = 0; i < touched.length; i++) {
       var t = touched[i];
-      if (t[1]) t[0].style.setProperty("background-color", t[1], t[2]);
-      else t[0].style.removeProperty("background-color");
-      if (t[3]) t[0].style.setProperty("background-image", t[3], t[4]);
-      else t[0].style.removeProperty("background-image");
+      var e = t[0];
+      for (var p = 0; p < PROPS.length; p++) {
+        var val = t[1 + p * 2];
+        var pri = t[2 + p * 2];
+        if (val) e.style.setProperty(PROPS[p], val, pri);
+        else e.style.removeProperty(PROPS[p]);
+      }
     }
     touched = [];
   }
 
+  var PROPS = [
+    "background-color",
+    "background-image",
+    "backdrop-filter",
+    "-webkit-backdrop-filter"
+  ];
+
   function keep(e) {
-    touched.push([
-      e,
-      e.style.getPropertyValue("background-color"),
-      e.style.getPropertyPriority("background-color"),
-      e.style.getPropertyValue("background-image"),
-      e.style.getPropertyPriority("background-image")
-    ]);
+    var saved = [e];
+    for (var i = 0; i < PROPS.length; i++) {
+      saved.push(e.style.getPropertyValue(PROPS[i]));
+      saved.push(e.style.getPropertyPriority(PROPS[i]));
+    }
+    touched.push(saved);
   }
 
   // Breadth-first so the outermost shells get handled first, node-capped so a
   // huge chat transcript can never turn this into a layout-thrashing crawl.
-  function dim(root, alpha) {
+  function dim(root) {
     var queue = [[root, 0]];
     var seen = 0;
     while (queue.length && seen < 800) {
@@ -327,19 +362,27 @@
             var m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/.exec(cs.backgroundColor);
             var opaqueFill = m && (m[4] === undefined || parseFloat(m[4]) > 0.9);
             var hasImage = cs.backgroundImage && cs.backgroundImage !== "none";
+            var hasBlur =
+              (cs.backdropFilter && cs.backdropFilter !== "none") ||
+              (cs.webkitBackdropFilter && cs.webkitBackdropFilter !== "none");
 
             // An opaque gradient hides the backdrop just as well as a flat fill,
             // so a surface only counts as glassed once both are dealt with.
-            if (opaqueFill || hasImage) {
+            // Cleared outright, not alpha-dimmed: the single tint lives on
+            // <html>. Stacking two 0.82 layers would come out 0.97 opaque.
+            if (opaqueFill || hasImage || hasBlur) {
               keep(e);
               if (opaqueFill) {
-                e.style.setProperty(
-                  "background-color",
-                  "rgba(" + m[1] + "," + m[2] + "," + m[3] + "," + alpha + ")",
-                  "important"
-                );
+                e.style.setProperty("background-color", "transparent", "important");
               }
               if (hasImage) e.style.setProperty("background-image", "none", "important");
+              // Inline and !important, because a site rule such as
+              // `.the-header{backdrop-filter:blur()!important}` outranks our
+              // universal stylesheet rule on specificity.
+              if (hasBlur) {
+                e.style.setProperty("backdrop-filter", "none", "important");
+                e.style.setProperty("-webkit-backdrop-filter", "none", "important");
+              }
             }
           }
         }
@@ -363,14 +406,23 @@
       tag.id = sid;
       (document.head || document.documentElement).appendChild(tag);
     }
-    // backdrop-filter is the real culprit behind the black header/composer bars:
-    // with the page background knocked out there is nothing opaque left to
-    // sample, so WebView2 composites the blur against transparent black. Our own
-    // rail keeps its blur -- it lives in a shadow root this rule cannot reach.
+    // Clear our own rules first so the sample sees the site's real colours.
+    tag.textContent = "";
+    captureBase();
+    // One translucent layer on <html>; everything above it is cleared. That
+    // keeps bare regions (a header with no background of its own) the same
+    // shade as the rest, instead of showing raw acrylic as a black bar.
+    //
+    // backdrop-filter has to go too: with the page background cleared there is
+    // nothing opaque left for a frosted header to sample, so WebView2
+    // composites the blur against transparent black. Our rail keeps its own
+    // blur -- it lives in a shadow root this rule cannot reach.
     tag.textContent =
-      "html,body{background-color:transparent!important;background-image:none!important}" +
+      "html{background-color:rgba(" + base + "," + LEVELS[level].alpha + ")!important;" +
+      "background-image:none!important}" +
+      "body{background-color:transparent!important;background-image:none!important}" +
       "*,*::before,*::after{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}";
-    dim(document.body || document.documentElement, LEVELS[level].alpha);
+    dim(document.body || document.documentElement);
   }
 
   function settle() {
