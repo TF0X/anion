@@ -277,6 +277,10 @@ fn main() -> wry::Result<()> {
                     None => return,
                 },
                 Some("glass") => Ev::Glass(msg["level"].as_u64().unwrap_or(0).min(2) as u8),
+                Some("diag") => {
+                    reclaim::diag(msg["msg"].as_str().unwrap_or(""));
+                    return;
+                }
                 Some("ready") => Ev::Ready,
                 Some("drag") => Ev::Drag,
                 Some("maximize") => Ev::Maximize,
@@ -364,8 +368,9 @@ fn main() -> wry::Result<()> {
             Event::UserEvent(Ev::Ready) => {
                 if let Some(w) = &webview {
                     let _ = w.evaluate_script(&format!(
-                        "window.__anionState({{glass:{}}})",
-                        state.glass
+                        "window.__anionState({{glass:{},diag:{}}})",
+                        state.glass,
+                        std::env::var_os("ANION_DIAG").is_some()
                     ));
                 }
             }

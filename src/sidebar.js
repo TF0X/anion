@@ -363,8 +363,13 @@
       tag.id = sid;
       (document.head || document.documentElement).appendChild(tag);
     }
+    // backdrop-filter is the real culprit behind the black header/composer bars:
+    // with the page background knocked out there is nothing opaque left to
+    // sample, so WebView2 composites the blur against transparent black. Our own
+    // rail keeps its blur -- it lives in a shadow root this rule cannot reach.
     tag.textContent =
-      "html,body{background-color:transparent!important;background-image:none!important}";
+      "html,body{background-color:transparent!important;background-image:none!important}" +
+      "*,*::before,*::after{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}";
     dim(document.body || document.documentElement, LEVELS[level].alpha);
   }
 
@@ -384,9 +389,38 @@
     if (persist) send("glass", { level: level });
   }
 
+  // Reports the actual element stack painting a given point, so the glass
+  // heuristic can be aimed at real DOM instead of guesses. Opt-in via ANION_DIAG.
+  function probe(label, x, y) {
+    var stack = document.elementsFromPoint(x, y) || [];
+    var parts = [];
+    for (var i = 0; i < Math.min(stack.length, 6); i++) {
+      var e = stack[i];
+      if (e.id === ROOT_ID) continue;
+      var cs = getComputedStyle(e);
+      var r = e.getBoundingClientRect();
+      parts.push(
+        e.tagName.toLowerCase() +
+          "[" + String(e.className || "").slice(0, 36) + "]" +
+          " bg=" + cs.backgroundColor +
+          (cs.backgroundImage !== "none" ? " +img" : "") +
+          " pos=" + cs.position +
+          " " + Math.round(r.width) + "x" + Math.round(r.height) + "@y" + Math.round(r.top)
+      );
+    }
+    send("diag", { msg: label + ": " + parts.join("  ||  ") });
+  }
+
   // Rust pushes persisted settings back in once the page announces itself.
   window.__anionState = function (s) {
-    if (s && typeof s.glass === "number") setLevel(s.glass, false);
+    if (!s) return;
+    if (typeof s.glass === "number") setLevel(s.glass, false);
+    if (s.diag) {
+      setTimeout(function () {
+        probe("TOP", Math.round(innerWidth / 2), 18);
+        probe("BOTTOM", Math.round(innerWidth / 2), innerHeight - 12);
+      }, 4000);
+    }
   };
 
   function build() {
