@@ -100,7 +100,10 @@ fn direction(tag: &str) -> Option<ResizeDirection> {
 
 /// Park the window near the bottom-right, the way a companion panel wants to sit.
 fn place_bottom_right(window: &Window) {
-    let Some(monitor) = window.primary_monitor().or_else(|| window.current_monitor()) else {
+    let Some(monitor) = window
+        .primary_monitor()
+        .or_else(|| window.current_monitor())
+    else {
         return;
     };
     let area = monitor.size();
