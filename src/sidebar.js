@@ -263,10 +263,12 @@
   // Alphas are deliberately low: this tint is the *only* opaque layer left once
   // the shells are cleared, so it stacks with nothing. At 0.8 the window went
   // flat grey and lost the desktop entirely.
+  // Light tints: the window carries its own acrylic blur-behind with a tint,
+  // so a heavy page layer on top just smothers it.
   var LEVELS = [
     { alpha: 1,    glyph: "○", name: "Solid" },
-    { alpha: 0.45, glyph: "◑", name: "Frosted" },
-    { alpha: 0.15, glyph: "●", name: "Clear" }
+    { alpha: 0.22, glyph: "◑", name: "Frosted" },
+    { alpha: 0.06, glyph: "●", name: "Clear" }
   ];
   var SKIP = { SCRIPT: 1, STYLE: 1, IMG: 1, VIDEO: 1, CANVAS: 1, SVG: 1, TEXTAREA: 1, INPUT: 1 };
   var level = 0;
@@ -332,11 +334,11 @@
   function dim(root) {
     var queue = [[root, 0]];
     var seen = 0;
-    while (queue.length && seen < 800) {
+    while (queue.length && seen < 2500) {
       var item = queue.shift();
       var node = item[0];
       var depth = item[1];
-      if (depth > 8 || !node.children) continue;
+      if (depth > 12 || !node.children) continue;
 
       for (var i = 0; i < node.children.length; i++) {
         var e = node.children[i];
@@ -344,21 +346,31 @@
         seen++;
 
         var r = e.getBoundingClientRect();
-        // Cheap gate before the expensive computed-style lookup.
-        if (r.width >= innerWidth * 0.6) {
+        var wide = r.width >= innerWidth * 0.6;
+        // A tall narrow band hugging the left or right edge is a nav rail --
+        // the one kind of chrome that is not full-width (ChatGPT's and Claude's
+        // conversation sidebars, for instance). Checked on the cheap rect
+        // before the expensive style read.
+        var railShape =
+          !wide && r.height >= innerHeight * 0.4 &&
+          r.width >= 80 && r.width <= innerWidth * 0.34 &&
+          (r.left <= 2 || r.right >= innerWidth - 2);
+
+        if (wide || railShape) {
           var cs = getComputedStyle(e);
-          var full = r.height >= innerHeight * 0.4;
-          // Headers, toolbars and composer bars: full width but short. They are
-          // the opaque strips left over once the main shell goes translucent.
+          var full = wide && r.height >= innerHeight * 0.4;
+          // Headers, toolbars and composer bars: full width but short. A short
+          // band counts as chrome whatever its position -- a header can be
+          // absolute rather than fixed/sticky and not touch the very top edge.
           var bar =
-            !full &&
-            r.height >= 24 &&
-            (cs.position === "fixed" ||
+            wide && !full && r.height >= 24 &&
+            (r.height <= 108 ||
+              cs.position === "fixed" ||
               cs.position === "sticky" ||
               r.top <= 2 ||
               r.bottom >= innerHeight - 2);
 
-          if (full || bar) {
+          if (full || bar || railShape) {
             var m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/.exec(cs.backgroundColor);
             var opaqueFill = m && (m[4] === undefined || parseFloat(m[4]) > 0.9);
             var hasImage = cs.backgroundImage && cs.backgroundImage !== "none";

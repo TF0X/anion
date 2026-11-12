@@ -112,6 +112,68 @@ fn place_bottom_right(window: &Window) {
     ));
 }
 
+/// A real Gaussian blur of the desktop behind the window, with a tint we pick
+/// (so it is *not* forced dark the way Win11's DWM acrylic is).
+///
+/// Calls the undocumented SetWindowCompositionAttribute with accent state
+/// ACCENT_ENABLE_ACRYLICBLURBEHIND directly: window-vibrancy's apply_acrylic
+/// switches to the DWM system backdrop on build 22621+, whose tint is fixed
+/// dark, and apply_blur's lighter blur-behind no longer renders on current
+/// Windows 11. The accent-state acrylic still blurs, with some resize lag.
+/// gradient_color is 0xAABBGGRR.
+#[cfg(target_os = "windows")]
+fn backdrop(win: &Window) {
+    use std::ffi::c_void;
+    use tao::platform::windows::WindowExtWindows;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+    use windows::core::{s, w};
+
+    #[repr(C)]
+    struct AccentPolicy {
+        state: u32,
+        flags: u32,
+        gradient_color: u32,
+        animation_id: u32,
+    }
+    #[repr(C)]
+    struct CompAttrData {
+        attribute: u32,
+        data: *mut c_void,
+        size: usize,
+    }
+
+    type SetWca = unsafe extern "system" fn(HWND, *mut CompAttrData) -> i32;
+    let set_wca: SetWca = unsafe {
+        let Ok(user32) = GetModuleHandleW(w!("user32.dll")) else {
+            return;
+        };
+        match GetProcAddress(user32, s!("SetWindowCompositionAttribute")) {
+            Some(p) => std::mem::transmute::<_, SetWca>(p),
+            None => return,
+        }
+    };
+
+    const WCA_ACCENT_POLICY: u32 = 19;
+    const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
+
+    let mut accent = AccentPolicy {
+        state: ACCENT_ENABLE_ACRYLICBLURBEHIND,
+        flags: 2,
+        gradient_color: 0x0D_1E_1A_16, // light, low-alpha frost (~0.05)
+        animation_id: 0,
+    };
+    let mut data = CompAttrData {
+        attribute: WCA_ACCENT_POLICY,
+        data: &mut accent as *mut _ as *mut c_void,
+        size: std::mem::size_of::<AccentPolicy>(),
+    };
+    unsafe {
+        let hwnd = HWND(win.hwnd() as *mut c_void);
+        set_wca(hwnd, &mut data);
+    }
+}
+
 /// Two tiers of memory reclaim.
 ///
 /// Trimming is invisible and safe whenever the window is idle. A full suspend
@@ -249,9 +311,7 @@ fn main() -> wry::Result<()> {
         use tao::platform::windows::WindowExtWindows;
         // Restores the drop shadow + rounded corners Windows gives decorated windows.
         window.set_undecorated_shadow(true);
-        // On Win11 22621+ this takes the DWM backdrop path and ignores any tint,
-        // so the glass colour is done in CSS instead.
-        let _ = window_vibrancy::apply_acrylic(&window, None);
+        backdrop(&window);
     }
 
     // Leaked so the context outlives the webview without borrow gymnastics;
